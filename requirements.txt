@@ -5,3 +5,4 @@ scikit-learn
 joblib
 numpy
 google-genai
+keras==3.13.2
