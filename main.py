@@ -10,7 +10,6 @@ from typing import Dict, List
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,119 +18,20 @@ from pydantic import BaseModel
 from google import genai
 
 
-# ── Custom objects Model 1 (Classifier) ─────────────────────────
-
-class ResidualBlock(keras.layers.Layer):
-    def __init__(self, units, dropout_rate=0.2, **kwargs):
-        super().__init__(**kwargs)
-        self.units        = units
-        self.dropout_rate = dropout_rate
-        self.dense1   = layers.Dense(units, use_bias=False)
-        self.dense2   = layers.Dense(units, use_bias=False)
-        self.bn1      = layers.BatchNormalization()
-        self.bn2      = layers.BatchNormalization()
-        self.dropout  = layers.Dropout(dropout_rate)
-        self.relu     = layers.Activation('relu')
-        self.add      = layers.Add()
-
-    def call(self, inputs, training=None):
-        x = self.dense1(inputs)
-        x = self.bn1(x, training=training)
-        x = self.relu(x)
-        x = self.dropout(x, training=training)
-        x = self.dense2(x)
-        x = self.bn2(x, training=training)
-        x = self.add([x, inputs])
-        return self.relu(x)
-
-    def get_config(self):
-        return {**super().get_config(), 'units': self.units, 'dropout_rate': self.dropout_rate}
-
-
-class FocalLoss(keras.losses.Loss):
-    def __init__(self, gamma=2.0, alpha=0.25, **kwargs):
-        super().__init__(**kwargs)
-        self.gamma = gamma
-        self.alpha = alpha
-
-    def call(self, y_true, y_pred):
-        y_true     = tf.cast(y_true, tf.int32)
-        n_classes  = tf.shape(y_pred)[-1]
-        y_true_ohe = tf.one_hot(y_true, depth=n_classes)
-        y_pred     = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
-        ce   = -tf.reduce_sum(y_true_ohe * tf.math.log(y_pred), axis=-1)
-        p_t  = tf.reduce_sum(y_true_ohe * y_pred, axis=-1)
-        return tf.reduce_mean(self.alpha * tf.pow(1.0 - p_t, self.gamma) * ce)
-
-    def get_config(self):
-        return {**super().get_config(), 'gamma': self.gamma, 'alpha': self.alpha}
-
-
-# ── Custom objects Model 2 (Forecaster) ─────────────────────────
-
-class AttentionLayer(keras.layers.Layer):
-    def __init__(self, units=32, **kwargs):
-        super().__init__(**kwargs)
-        self.units = units
-
-    def build(self, input_shape):
-        feature_dim      = input_shape[-1]
-        self.W_attention = self.add_weight('W_att', shape=(feature_dim, self.units), initializer='glorot_uniform', trainable=True)
-        self.b_attention = self.add_weight('b_att', shape=(self.units,), initializer='zeros', trainable=True)
-        self.V           = self.add_weight('V_att', shape=(self.units, 1), initializer='glorot_uniform', trainable=True)
-        super().build(input_shape)
-
-    def call(self, inputs):
-        score   = tf.tanh(tf.matmul(inputs, self.W_attention) + self.b_attention)
-        score   = tf.matmul(score, self.V)
-        weights = tf.nn.softmax(score, axis=1)
-        return tf.reduce_sum(inputs * weights, axis=1)
-
-    def get_config(self):
-        return {**super().get_config(), 'units': self.units}
-
-
-class WeightedMAELoss(keras.losses.Loss):
-    def __init__(self, income_weight=1.0, expense_weight=1.5, **kwargs):
-        super().__init__(**kwargs)
-        self.income_weight  = income_weight
-        self.expense_weight = expense_weight
-
-    def call(self, y_true, y_pred):
-        return tf.reduce_mean(
-            self.income_weight  * tf.abs(y_true[:, 0] - y_pred[:, 0]) +
-            self.expense_weight * tf.abs(y_true[:, 1] - y_pred[:, 1])
-        )
-
-    def get_config(self):
-        return {**super().get_config(), 'income_weight': self.income_weight, 'expense_weight': self.expense_weight}
-
-
-CUSTOM_OBJECTS_CLASSIFIER = {
-    'ResidualBlock': ResidualBlock,
-    'FocalLoss'    : FocalLoss,
-}
-
-CUSTOM_OBJECTS_FORECASTER = {
-    'AttentionLayer' : AttentionLayer,
-    'WeightedMAELoss': WeightedMAELoss,
-}
-
-
 # ── Load semua artefak saat server startup ───────────────────────
 
 print("Memuat Model 1 (Classifier)...")
-MODEL_CLASSIFIER  = keras.models.load_model('financial_health_classifier.keras', custom_objects=CUSTOM_OBJECTS_CLASSIFIER)
+MODEL_CLASSIFIER  = tf.saved_model.load('classifier_savedmodel')
 SCALER_CLASSIFIER = joblib.load('scaler.pkl')
-with open('feature_cols.json')   as f: FEATURE_COLS_CLASSIFIER = json.load(f)
-with open('label_classes.json')  as f: LABEL_CLASSES           = json.load(f)
+with open('feature_cols.json')  as f: FEATURE_COLS_CLASSIFIER = json.load(f)
+with open('label_classes.json') as f: LABEL_CLASSES           = json.load(f)
 print("Model 1 berhasil dimuat.")
 
 print("Memuat Model 2 (Forecaster)...")
-MODEL_FORECASTER  = keras.models.load_model('financial_health_forecaster.keras', custom_objects=CUSTOM_OBJECTS_FORECASTER)
-SCALER_X          = joblib.load('scaler_forecast_x.pkl')
-SCALER_INCOME     = joblib.load('scaler_income.pkl')
-SCALER_EXPENSE    = joblib.load('scaler_expense.pkl')
+MODEL_FORECASTER = tf.saved_model.load('forecaster_savedmodel')
+SCALER_X         = joblib.load('scaler_forecast_x.pkl')
+SCALER_INCOME    = joblib.load('scaler_income.pkl')
+SCALER_EXPENSE   = joblib.load('scaler_expense.pkl')
 with open('feature_cols_forecast.json') as f: FEATURE_COLS_FORECASTER = json.load(f)
 print("Model 2 berhasil dimuat.")
 
@@ -216,9 +116,9 @@ def health_check():
 def classify(req: ClassifyRequest):
     try:
         X    = np.array([[req.features.get(c, 0.0) for c in FEATURE_COLS_CLASSIFIER]], dtype=np.float32)
-        X_sc = SCALER_CLASSIFIER.transform(X)
+        X_sc = SCALER_CLASSIFIER.transform(X).astype(np.float32)
 
-        probs = MODEL_CLASSIFIER.predict(X_sc, verbose=0)[0]
+        probs = MODEL_CLASSIFIER(X_sc, training=False).numpy()[0]
         pred  = int(np.argmax(probs))
         label = LABEL_CLASSES[pred]
         conf  = float(probs[pred])
@@ -252,9 +152,10 @@ def forecast(req: ForecastRequest):
         raise HTTPException(status_code=400, detail='monthly_history harus berisi tepat 3 bulan data.')
     try:
         X_raw  = np.array([[m.get(c, 0.0) for c in FEATURE_COLS_FORECASTER] for m in req.monthly_history], dtype=np.float32)
-        X_norm = SCALER_X.transform(X_raw)[np.newaxis, :, :]
+        X_norm = SCALER_X.transform(X_raw).astype(np.float32)
+        X_in   = X_norm[np.newaxis, :, :]
 
-        pred         = MODEL_FORECASTER.predict(X_norm, verbose=0)[0]
+        pred         = MODEL_FORECASTER(X_in, training=False).numpy()[0]
         pred_income  = float(SCALER_INCOME.inverse_transform([[pred[0]]])[0][0])
         pred_expense = max(float(SCALER_EXPENSE.inverse_transform([[pred[1]]])[0][0]), 0)
 

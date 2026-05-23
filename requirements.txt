@@ -1,8 +1,7 @@
 fastapi
 uvicorn
-tensorflow==2.20.0
+tensorflow
 scikit-learn
 joblib
 numpy
 google-genai
-keras==3.13.2
