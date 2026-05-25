@@ -118,7 +118,12 @@ def classify(req: ClassifyRequest):
         X    = np.array([[req.features.get(c, 0.0) for c in FEATURE_COLS_CLASSIFIER]], dtype=np.float32)
         X_sc = SCALER_CLASSIFIER.transform(X).astype(np.float32)
 
-        probs = MODEL_CLASSIFIER(X_sc, training=False).numpy()[0]
+        #probs = MODEL_CLASSIFIER(X_sc, training=False).numpy()[0]
+        infer = MODEL_CLASSIFIER.signatures['serving_default']
+        output = infer(tf.constant(X_sc))
+        #kode di atas di ubah
+
+        probs = list(output.values())[0].numpy()[0]
         pred  = int(np.argmax(probs))
         label = LABEL_CLASSES[pred]
         conf  = float(probs[pred])
@@ -155,7 +160,11 @@ def forecast(req: ForecastRequest):
         X_norm = SCALER_X.transform(X_raw).astype(np.float32)
         X_in   = X_norm[np.newaxis, :, :]
 
-        pred         = MODEL_FORECASTER(X_in, training=False).numpy()[0]
+        #pred         = MODEL_FORECASTER(X_in, training=False).numpy()[0]
+        infer = MODEL_FORECASTER.signatures['serving_default']
+        output = infer(tf.constant(X_in))
+        pred = list(output.values())[0].numpy()[0]
+        #kode di atas di ubah
         pred_income  = float(SCALER_INCOME.inverse_transform([[pred[0]]])[0][0])
         pred_expense = max(float(SCALER_EXPENSE.inverse_transform([[pred[1]]])[0][0]), 0)
 
